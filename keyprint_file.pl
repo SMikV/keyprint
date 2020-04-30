@@ -1,23 +1,26 @@
 #!/usr/bin/perl
 
 
-use v5.14;
+use 5.16.1;
 
 ##
-# DEFALUTS
+# DEFAULTS
 ##
 use constant {
-   DFLT_WAIT_BEFORE_SEND => 5,
-   DFLT_MISPRINT_FRQ => 20, # than lesser, than more often. Like 1/N
-   DFLT_CLI_TOOL => 'xdotool'
+   DFLT_WAIT_BEFORE_SEND =>  5,
+   DFLT_MISPRINT_FRQ 	 =>  20, # than lesser, than more often. Like 1/N
+   DFLT_GO2WC_FRQ	 =>  250,
+   DFLT_CLI_TOOL 	 => 'xdotool',
+   MIN_BREAK_DURATION	 =>  300,  # 5 minuites
+   MAX_BREAK_DURATION	 =>  1200, # 20 minutes
 };
 
 ##
 # Key aliases
 ##
 use constant {
-   KEY_SPACE => 'space',
-   KEY_ENTER => 'KP_Enter',
+   KEY_SPACE 	 => 'space',
+   KEY_ENTER 	 => 'KP_Enter',
    KEY_BACKSPACE => 'BackSpace'
 };
 
@@ -31,28 +34,28 @@ unless (check_cli_tool(DFLT_CLI_TOOL)) {
       ."Please install " . DFLT_CLI_TOOL . " and be sure that PATH env. variable is set correctly\n";
 }
 
-
 my $mistaken_chrs    = join('' => map chr($_), 32 .. 127);
 my $l_mistaken_chrs  = length $mistaken_chrs;
 
-printf "Go to window where we need to send keystrokes\nBe patient, we will remember current window id after %d seconds!\n", DFLT_WAIT_BEFORE_SEND;
+printf <<EOSTR, DFLT_WAIT_BEFORE_SEND;
+Now go to window where we need to send keystrokes.
+Be patient, we will remember current window id after %d seconds!
+EOSTR
 
 for my $i (1 .. DFLT_WAIT_BEFORE_SEND) {
-   sleep 1;
-   say '=> ', $i, ($i == DFLT_WAIT_BEFORE_SEND ? '!' : ''), ($i >= (DFLT_WAIT_BEFORE_SEND - 1) ? '!' : ''), ' <=';
+  sleep 1;
+  say '=> ', $i, ($i == DFLT_WAIT_BEFORE_SEND ? '!' : ''), ($i >= (DFLT_WAIT_BEFORE_SEND - 1) ? '!' : ''), ' <=';
 }
 
 my $xdo = XDoTool->new;
 
 while ( 1 ) {
-   for my $file ( @ARGV ) {
-      handle_file($file);
-   }
+  for my $file ( @ARGV ) {
+    handle_file($file);
+  }
 }
 
-
 exit 0;
-
 
 sub handle_file
 {
@@ -80,9 +83,12 @@ sub print_line
 
    for ( 0..$#words ) {
       print_word($words[$_]);
+      
+      int(rand DFLT_GO2WC_FRQ) or do_short_break;
+      
       $xdo->key(KEY_SPACE) if $_ != $#words;
    }
-
+   
    $xdo->key(KEY_ENTER)
 }
 
@@ -95,8 +101,9 @@ sub print_word
          $xdo->type(substr $mistaken_chrs, int(rand $l_mistaken_chrs), 1);
          $xdo->key(KEY_BACKSPACE);
       };
-
-      $xdo->type($letter)
+      $letter =~ /[a-zA-Z]/
+         ? $xdo->key(  $letter =~ /[A-Z]/ ? ('Shift', lc $letter) : $letter )
+         : $xdo->type( $letter );
    }
 }
 
@@ -109,6 +116,18 @@ EOF
 
 }
 
+sub get_break_duration
+{
+  MIN_BREAK_DURATION + int(rand(MAX_BREAK_DURATION - MIN_BREAK_DURATION))
+}
+
+sub do_short_break
+{
+  my $break_dur = get_break_duration;
+  printf "We did a good job, but we need to do a short break sometimes. Break for %d seconds\n", $break_dur;
+  sleep $break_dur;
+}
+
 sub check_cli_tool { `which $_[0]` ? 1 : 0; }
 
 package XDoTool;
@@ -117,6 +136,21 @@ use constant {
    MIN_DELAY_BTW_INPUTS => 200_000,
    MAX_DELAY_BTW_INPUTS => 1_300_000,
 };
+
+BEGIN {
+  no strict 'refs';
+  for my $func (qw/key type/) {
+    *{__PACKAGE__ . '::' . $_} = sub {
+      my $tool = shift;
+      my $what2out = $func eq 'key' ? join('+' => @_) : $_[1];
+      
+      $tool->__delay;
+      system(sprintf q(%s 			 %s         --window  %s 	  %s),
+                       $tool->{'cli_tool'}	$func, 	    $tool->{'window_id'}, __safe4shell($what2out)
+      )
+    }
+  } # loop through "key" and "type" methods
+}
 
 use Time::HiRes qw(usleep);
 
@@ -166,19 +200,8 @@ sub __safe4shell {
       : q<'> .  $_[0] . q<'>;
 }
 
-sub key {
-   my $tool = shift;
-   my $key_stroke = join('+' => @_);
-   
-   $tool->__delay;
-   system(sprintf q(%s key --window %s %s),  @{$tool}{qw/cli_tool window_id/}, __safe4shell($key_stroke))
-}
-
-sub type {
-   my $tool = $_[0];
-   my $str =  $_[1];
-   
-   $tool->__delay;
-   system(sprintf q(%s type --window %s %s), @{$tool}{qw/cli_tool window_id/}, __safe4shell($str))
-}
+#sub __FUNC__ {
+#    my $stack_lvl = caller(1) ? 1 : 0;
+#    scalar((caller($stack_lvl))[3]) =~ s%^main::([^:]+)$%$1%r . '()'
+#}
 
