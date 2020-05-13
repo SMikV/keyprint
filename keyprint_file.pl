@@ -1,7 +1,10 @@
 #!/usr/bin/perl
-
+package main;
 
 use 5.16.1;
+use Getopt::Std;
+use POSIX qw(strftime); 
+use HTTP::Date;
 
 ##
 # DEFAULTS
@@ -11,8 +14,9 @@ use constant {
    DFLT_MISPRINT_FRQ 	 =>  20, # than lesser, than more often. Like 1/N
    DFLT_GO2WC_FRQ	 =>  250,
    DFLT_CLI_TOOL 	 => 'xdotool',
-   MIN_BREAK_DURATION	 =>  300,  # 5 minuites
-   MAX_BREAK_DURATION	 =>  1200, # 20 minutes
+   MIN_BREAK_DURATION	 =>  4 * 60,  # 4 minuites
+   MAX_BREAK_DURATION	 =>  12 * 60, # 12 minutes
+   XC_DONE		 =>  0,
 };
 
 ##
@@ -24,6 +28,26 @@ use constant {
    KEY_BACKSPACE => 'BackSpace'
 };
 
+getopts 'f:', \my %opt;
+
+my $flExitByAlarm;
+if ( my $finish_at = $opt{'f'} ) {  
+  my $ts_now = time;
+  $finish_at =~ /(?:^|\s)\d+:\d+$/ and $finish_at .= ':00';
+  if ( $finish_at =~ /:/ and $finish_at !~ /-/ ) {
+    my $HMS = strftime('%H%M%S', localtime($ts_now));
+    my $Ymd = strftime( '%Y-%m-%d', localtime($ts_now + (($finish_at =~ s%:%%gr) <= $HMS ? 86400 : 0)) );
+    $finish_at = join(' ' => $Ymd, $finish_at);
+  }
+  my $ts_finish_at = str2time($finish_at)
+    or die 'failed to parse finish time';
+  (my $dlt_secs = ($ts_finish_at - $ts_now)) > 0
+    or die 'time to finish is in the past';
+    
+  alarm($dlt_secs);
+  $SIG{ALRM} = sub { $flExitByAlarm = 1; exit; };
+  printf "WARN: Execution will be interrupted at %s, after %d seconds of execution\n", $finish_at, $dlt_secs;
+}
 
 unless (@ARGV) {
    print_usage() and exit 0;
@@ -42,6 +66,8 @@ Now go to window where we need to send keystrokes.
 Be patient, we will remember current window id after %d seconds!
 EOSTR
 
+
+
 for my $i (1 .. DFLT_WAIT_BEFORE_SEND) {
   sleep 1;
   say '=> ', $i, ($i == DFLT_WAIT_BEFORE_SEND ? '!' : ''), ($i >= (DFLT_WAIT_BEFORE_SEND - 1) ? '!' : ''), ' <=';
@@ -55,7 +81,7 @@ while ( 1 ) {
   }
 }
 
-exit 0;
+exit XC_DONE;
 
 sub handle_file
 {
@@ -84,7 +110,7 @@ sub print_line
    for ( 0..$#words ) {
       print_word($words[$_]);
       
-      int(rand DFLT_GO2WC_FRQ) or do_short_break;
+      int(rand DFLT_GO2WC_FRQ) or do_short_break();
       
       $xdo->key(KEY_SPACE) if $_ != $#words;
    }
@@ -110,8 +136,8 @@ sub print_word
 sub print_usage
 {
    print <<EOF;
-USAGE: $0 path_to_file
-EXAMPLE: $0 ./my_text.txt
+USAGE: $0 [-f FINAL_TIME] path_to_file
+EXAMPLE: $0 -f 19:00 ./my_text.txt
 EOF
 
 }
@@ -130,7 +156,12 @@ sub do_short_break
 
 sub check_cli_tool { `which $_[0]` ? 1 : 0; }
 
+END {
+  say 'Interrupted by alarm' if $flExitByAlarm;
+}
+
 package XDoTool;
+use Time::HiRes qw(usleep);
 
 use constant { 
    MIN_DELAY_BTW_INPUTS => 200_000,
@@ -140,19 +171,17 @@ use constant {
 BEGIN {
   no strict 'refs';
   for my $func (qw/key type/) {
-    *{__PACKAGE__ . '::' . $_} = sub {
+    *{__PACKAGE__ . '::' . $func} = sub {
       my $tool = shift;
-      my $what2out = $func eq 'key' ? join('+' => @_) : $_[1];
+      my $what2out = $func eq 'key' ? join('+' => @_) : $_[0];
       
       $tool->__delay;
-      system(sprintf q(%s 			 %s         --window  %s 	  %s),
-                       $tool->{'cli_tool'}	$func, 	    $tool->{'window_id'}, __safe4shell($what2out)
+      system(sprintf q(%s 			 %s         --window  %s 	    %s ),
+                       $tool->{'cli_tool'},	$func, 	    $tool->{'window_id'},   __safe4shell($what2out)
       )
     }
   } # loop through "key" and "type" methods
 }
-
-use Time::HiRes qw(usleep);
 
 sub new {
    state $dflt_props = {
