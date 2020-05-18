@@ -6,6 +6,8 @@ use Getopt::Std;
 use POSIX qw(strftime); 
 use HTTP::Date;
 
+use subs qw/maybe_mistaken_char do_short_break/;
+
 ##
 # DEFAULTS
 ##
@@ -28,7 +30,18 @@ use constant {
    KEY_BACKSPACE => 'BackSpace'
 };
 
-getopts 'f:', \my %opt;
+getopts 'LNf:', \my %opt;
+unless (@ARGV) {
+   print_usage() and exit 0;
+}
+
+my $flNoDelay = $opt{'N'} and do {
+   no strict 'refs';
+   *{__PACKAGE__ . '::' . $_} = sub { 1 }
+      for qw/do_short_break maybe_mistaken_char/
+};
+
+my $loop_decr = $opt{'L'} ? 1 : 0;
 
 my $flExitByAlarm;
 if ( my $finish_at = $opt{'f'} ) {  
@@ -49,10 +62,6 @@ if ( my $finish_at = $opt{'f'} ) {
   printf "WARN: Execution will be interrupted at %s, after %d seconds of execution\n", $finish_at, $dlt_secs;
 }
 
-unless (@ARGV) {
-   print_usage() and exit 0;
-}
-
 unless (check_cli_tool(DFLT_CLI_TOOL)) {
    die 'ERROR: ' . DFLT_CLI_TOOL . " not found!\n"
       ."Please install " . DFLT_CLI_TOOL . " and be sure that PATH env. variable is set correctly\n";
@@ -66,19 +75,21 @@ Now go to window where we need to send keystrokes.
 Be patient, we will remember current window id after %d seconds!
 EOSTR
 
-
-
 for my $i (1 .. DFLT_WAIT_BEFORE_SEND) {
   sleep 1;
   say '=> ', $i, ($i == DFLT_WAIT_BEFORE_SEND ? '!' : ''), ($i >= (DFLT_WAIT_BEFORE_SEND - 1) ? '!' : ''), ' <=';
 }
 
-my $xdo = XDoTool->new;
+my $xdo = XDoTool->new(
+  $flNoDelay ? ('no_delay' => 1) : ()
+);
 
-while ( 1 ) {
+my $count = 1;
+while ( $count ) {
   for my $file ( @ARGV ) {
     handle_file($file);
   }
+  $count -= $loop_decr
 }
 
 exit XC_DONE;
@@ -123,10 +134,7 @@ sub print_word
    my $word = shift;
 
    for my $letter ( split '' => $word ) {
-      int(rand DFLT_MISPRINT_FRQ) or do {
-         $xdo->type(substr $mistaken_chrs, int(rand $l_mistaken_chrs), 1);
-         $xdo->key(KEY_BACKSPACE);
-      };
+      maybe_mistaken_char;
       $letter =~ /[a-zA-Z]/
          ? $xdo->key(  $letter =~ /[A-Z]/ ? ('Shift', lc $letter) : $letter )
          : $xdo->type( $letter );
@@ -144,14 +152,22 @@ EOF
 
 sub get_break_duration
 {
-  MIN_BREAK_DURATION + int(rand(MAX_BREAK_DURATION - MIN_BREAK_DURATION))
+   MIN_BREAK_DURATION + int(rand(MAX_BREAK_DURATION - MIN_BREAK_DURATION))
+}
+
+sub maybe_mistaken_char
+{
+   int(rand DFLT_MISPRINT_FRQ) or do {
+      $xdo->type(substr $mistaken_chrs, int(rand $l_mistaken_chrs), 1);
+      $xdo->key(KEY_BACKSPACE);
+   }
 }
 
 sub do_short_break
 {
-  my $break_dur = get_break_duration;
-  printf "We did a good job, but we need to do a short break sometimes. Break for %d seconds\n", $break_dur;
-  sleep $break_dur;
+   my $break_dur = get_break_duration;
+   printf "We did a good job, but we need to do a short break sometimes. Break for %d seconds\n", $break_dur;
+   sleep $break_dur;
 }
 
 sub check_cli_tool { `which $_[0]` ? 1 : 0; }
@@ -177,32 +193,42 @@ BEGIN {
       
       $tool->__delay;
       system(sprintf q(%s 			 %s         --window  %s 	    %s ),
-                       $tool->{'cli_tool'},	$func, 	    $tool->{'window_id'},   __safe4shell($what2out)
+                       $tool->cli_tool,		$func, 	    $tool->window_id,   __safe4shell($what2out)
       )
     }
   } # loop through "key" and "type" methods
 }
 
 sub new {
-   state $dflt_props = {
-      min_delay => MIN_DELAY_BTW_INPUTS,
-      max_delay => MAX_DELAY_BTW_INPUTS,
-      cli_tool  => 'xdotool',
+   state $has_properties = {
+      'min_delay' 	=> {default => MIN_DELAY_BTW_INPUTS},
+      'max_delay' 	=> {default => MAX_DELAY_BTW_INPUTS},
+      'cli_tool'  	=> {default => 'xdotool'},
+      'no_delay'	=> {default => 0},
+      'window_id'	=> {}
    };
 
    my ($class, %params) = @_;
    my $class_name = ref($class) || $class;
-   my $props = {};
+   my $xdo = +{ map {
+     my ($property, $vd) = each %{$has_properties};
+     $property => 
+       $params{$property} //
+         $vd->{'default'} // (
+           $vd->{'mand'}
+             ? die sprintf(q<%s's mandatory constructor argument "%s" is missing>, $class_name, $property)
+             : undef         )
+   } 1..keys %{$has_properties} };
 
-   for ( qw/min_delay max_delay cli_tool/ ) {
-      $props->{$_} = $params{$_} // $dflt_props->{$_} 
-                     // die $class_name . ': mandatory constructor argument "' . $_ . '" is missing';
-   }
+   bless $xdo, $class_name;
+   $xdo->window_id unless $params{'window_id'};
+   $xdo
+}
 
-   bless $props, $class_name;
-
-   $props->{'window_id'} = $params{'window_id'} // $props->__get_active_window_id;
-   $props
+sub window_id {
+  my $tool = $_[0];
+  $tool->{'window_id'} = $_[1] if $#_ > 0;
+  $tool->{'window_id'} //= $tool->__get_active_window_id
 }
 
 sub __get_active_window_id {
@@ -220,13 +246,23 @@ sub __rnd {
 }
 
 sub __delay {
-   usleep __rnd(@{$_[0]}{qw/min_delay max_delay/}) 
+   usleep __rnd(@{$_[0]}{qw/min_delay max_delay/}) unless $_[0]{'no_delay'};
 }
 
 sub __safe4shell {
    $_[0] =~ /'/
       ? q<"> . ($_[0] =~ s%([\\`"])%\\$1%gr) . q<">
       : q<'> .  $_[0] . q<'>;
+}
+
+our $AUTOLOAD;
+sub AUTOLOAD {
+  return unless my ($property) = $AUTOLOAD =~ m/::(.+?)$/;
+  no strict 'refs';
+  *{$AUTOLOAD} = sub {
+    $#_ > 0 ? $_[0]{$property} = $_[1] : $_[0]{$property}
+  };
+  goto &{$AUTOLOAD}
 }
 
 #sub __FUNC__ {
