@@ -97,14 +97,17 @@ exit XC_DONE;
 sub handle_file
 {
    my $path = shift;
-
-   open my $fh, '<:utf8', $path or do {
-      warn 'Failed to open file ' . $path . ': ' . $! . '. Skipping it!';
-      return;
-   };
+   my $fh = 
+     $path eq '-'
+     ? *STDIN
+     : do {
+         open my $fh, '<:utf8', $path
+           or (warn("Failed to open file ${path}: $!. Skipping it!"), return);
+         $fh
+       };
 
    while (my $line = readline $fh) {
-      print_line($line);
+     print_line($line);
    }
 
    $xdo->key(KEY_ENTER);
