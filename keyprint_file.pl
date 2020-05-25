@@ -14,7 +14,7 @@ use subs qw/maybe_mistaken_char do_short_break/;
 use constant {
    DFLT_WAIT_BEFORE_SEND =>  5,
    DFLT_MISPRINT_FRQ 	 =>  20, # than lesser, than more often. Like 1/N
-   DFLT_GO2WC_FRQ	 =>  250,
+   DFLT_GO2WC_FRQ	 =>  400,
    DFLT_CLI_TOOL 	 => 'xdotool',
    MIN_BREAK_DURATION	 =>  4 * 60,  # 4 minuites
    MAX_BREAK_DURATION	 =>  12 * 60, # 12 minutes
@@ -30,9 +30,9 @@ use constant {
    KEY_BACKSPACE => 'BackSpace'
 };
 
-getopts 'LNf:', \my %opt;
+getopts 'LNf:b:', \my %opt;
 unless (@ARGV) {
-   print_usage() and exit 0;
+   print_usage() and exit XC_DONE;
 }
 
 my $flNoDelay = $opt{'N'} and do {
@@ -40,6 +40,8 @@ my $flNoDelay = $opt{'N'} and do {
    *{__PACKAGE__ . '::' . $_} = sub { 1 }
       for qw/do_short_break maybe_mistaken_char/
 };
+
+my $break_freq = $opt{'b'} // DFLT_GO2WC_FRQ;
 
 my $loop_decr = $opt{'L'} ? 1 : 0;
 
@@ -124,7 +126,7 @@ sub print_line
    for ( 0..$#words ) {
       print_word($words[$_]);
       
-      int(rand DFLT_GO2WC_FRQ) or do_short_break();
+      int(rand $break_freq) or do_short_break();
       
       $xdo->key(KEY_SPACE) if $_ != $#words;
    }
